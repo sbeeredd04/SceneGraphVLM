@@ -1,0 +1,10 @@
+google-generativeai
+python-dotenv
+networkx
+matplotlib
+pillow
+requests
+tqdm
+httpx
+opencv-python
+numpy
