@@ -12,6 +12,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
+import base64
 
 # Configure logging
 logging.basicConfig(
@@ -211,43 +212,93 @@ def parse_model_response(response_text):
 
 def predict_scene_graphs(train_graphs, num_predictions, model, vocabulary_type='closed', 
                         object_classes=None, relationship_classes=None):
-    """Generate scene graph predictions with growing context"""
+    """Generate scene graph predictions using frame images and scene graphs as context"""
     try:
         logger.info(f"Generating {num_predictions} sequential predictions using {vocabulary_type} vocabulary")
         predictions = []
-        context_graphs = train_graphs.copy()  # Start with all training frames
+        context_graphs = train_graphs.copy()
+        
+        # Debug initial context
+        logger.debug("\n=======INITIAL CONTEXT========")
+        logger.debug(f"Starting with {len(context_graphs)} training frames")
+        logger.debug(f"Frame numbers: {[int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs]}")
+        logger.debug("============================\n")
+        
+        # Get test frame IDs to predict
+        test_frame_nums = []
+        last_train_num = int(context_graphs[-1]['frame_id'].split('/')[-1].split('.')[0])
+        
+        # Find existing frame files after the last training frame
+        video_id = context_graphs[0]['frame_id'].split('/')[0]
+        frame_pattern = f"./data/frames/{video_id}/*.png"
+        all_frames = sorted(glob(frame_pattern))
+        
+        for frame_path in all_frames:
+            frame_num = int(frame_path.split('/')[-1].split('.')[0])
+            if frame_num > last_train_num:
+                test_frame_nums.append(frame_num)
+        
+        logger.info(f"Found {len(test_frame_nums)} test frames to predict after frame {last_train_num}")
         
         # Prepare vocabulary context
         vocab_context = ""
         if vocabulary_type == 'closed':
             vocab_context = f"Available objects: {', '.join(object_classes)}\nAvailable relationships: {', '.join(relationship_classes)}"
         
-        for i in tqdm(range(num_predictions), desc="Generating predictions"):
-            last_frame_num = int(context_graphs[-1]['frame_id'].split('/')[-1].split('.')[0])
-            next_frame_num = last_frame_num + 1
+        for i, next_frame_num in enumerate(test_frame_nums[:num_predictions], 1):
+            logger.debug(f"\n=======PREDICTION {i}/{num_predictions}========")
+            logger.debug(f"Predicting frame {next_frame_num:06d}")
+            logger.debug(f"Context has {len(context_graphs)} frames")
+            logger.debug(f"Last 3 context frames: {[int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs[-3:]]}")
             
-            # Get all frame numbers in context for logging
-            frame_nums = [int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs]
-            logger.debug(f"Predicting frame {next_frame_num} using all {len(frame_nums)} previous frames")
-            logger.debug(f"Context frames: {frame_nums}")
+            # Load previous frame images as base64
+            frame_contexts = []
+            for ctx in context_graphs:
+                frame_path = f"./data/frames/{ctx['frame_id']}"
+                try:
+                    with open(frame_path, 'rb') as img_file:
+                        img_data = base64.b64encode(img_file.read()).decode()
+                        frame_num = int(ctx['frame_id'].split('/')[-1].split('.')[0])
+                        frame_contexts.append({
+                            'frame_num': frame_num,
+                            'image': img_data,
+                            'scene_graph': ctx['scene_graph']
+                        })
+                except Exception as e:
+                    logger.warning(f"Failed to load frame image {frame_path}: {e}")
             
-            # Use all context frames for prediction
-            context = json.dumps([g['scene_graph'] for g in context_graphs], indent=2)
+            # Debug context information
+            debug_context = "\n=======CONTEXT DETAILS========\n"
+            for ctx in frame_contexts[-3:]:  # Show last 3 frames for brevity
+                frame_num = ctx['frame_num']
+                scene_graph = ctx['scene_graph']
+                debug_context += f"\nFrame {frame_num:06d}:\n"
+                debug_context += "Objects:\n"
+                for obj in scene_graph['objects']:
+                    debug_context += f"  - {obj['object']}\n"
+                debug_context += "Relationships:\n"
+                for rel in scene_graph['relationships']:
+                    debug_context += f"  - {rel['subject']} {rel['predicate']} {rel['object']}\n"
+            debug_context += "\n========================\n"
             
-            prompt = f"""
-            Predict the next scene graph (frame {next_frame_num}) continuing from these {len(context_graphs)} previous frames.
+            logger.debug(debug_context)
+            
+            # Prepare context string with both images and scene graphs
+            context_str = json.dumps([{
+                'frame_num': ctx['frame_num'],
+                'scene_graph': ctx['scene_graph']
+            } for ctx in frame_contexts], indent=2)
+            
+            prompt = f"""Given the sequence of scene graphs below, predict the next scene graph for frame {next_frame_num:06d}.
+            Consider the logical progression of objects, their interactions, and relationships.
             
             {vocab_context if vocabulary_type == 'closed' else ''}
 
-            Previous frames ({frame_nums[0]} to {frame_nums[-1]}):
-            {context}
-
-            Guidelines:
-            - Continue the sequence naturally
-            - Keep objects and interactions consistent
-            - Follow the established patterns
-
-            Return a JSON scene graph:
+            Previous frames (with scene graphs):
+            {context_str}
+            
+            Predict the next scene graph that maintains temporal consistency with the sequence above.
+            Return ONLY a JSON object with this structure:
             {{
                 "objects": [
                     {{"object": "<object_name>", "attributes": []}},
@@ -259,29 +310,40 @@ def predict_scene_graphs(train_graphs, num_predictions, model, vocabulary_type='
             Do not include any other text or formatting, just the JSON object.
             """
             
+            # Debug prompt
+            logger.debug("\n=======PROMPT========\n")
+            logger.debug(prompt)
+            logger.debug("\n===================\n")
+            
             response = model.generate_content(prompt)
             predicted_graph = parse_model_response(response.text)
             
             if predicted_graph:
-                if vocabulary_type == 'closed':
-                    predicted_graph = validate_vocabulary(predicted_graph, object_classes, relationship_classes)
+                # Debug prediction and context update
+                logger.debug("\n=======CONTEXT UPDATE========")
+                logger.debug(f"Adding prediction for frame {next_frame_num:06d} to context")
+                logger.debug("Predicted scene graph:")
+                logger.debug("Objects:")
+                for obj in predicted_graph['objects']:
+                    logger.debug(f"  - {obj['object']}")
+                logger.debug("Relationships:")
+                for rel in predicted_graph['relationships']:
+                    logger.debug(f"  - {rel['subject']} {rel['predicate']} {rel['object']}")
                 
-                # Create prediction entry
+                # Create prediction entry with proper frame ID format
                 prediction_entry = {
-                    'frame_id': f"{context_graphs[0]['frame_id'].split('/')[0]}/{next_frame_num:06d}.png",
+                    'frame_id': f"{video_id}/{next_frame_num:06d}.png",
                     'scene_graph': predicted_graph
                 }
                 
-                # Add to predictions list
                 predictions.append(prediction_entry)
-                
-                # Add to context for next iteration
                 context_graphs.append(prediction_entry)
                 
-                logger.debug(f"Successfully predicted frame {next_frame_num}")
                 logger.debug(f"Context size now: {len(context_graphs)} frames")
+                logger.debug(f"Context frame numbers: {[int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs[-3:]]}")
+                logger.debug("============================\n")
             else:
-                logger.warning(f"Failed to predict frame {next_frame_num}")
+                logger.warning(f"Failed to predict frame {next_frame_num:06d}")
                 continue
                 
         return predictions
@@ -487,7 +549,7 @@ def main():
         bbox_rel_data, object_classes, relationship_classes = load_annotations()
         
         # Process specific video
-        video_id = "3G4PN.mp4"
+        video_id = "BPT87.mp4"
         scene_graphs = process_video_frames(video_id, bbox_rel_data)
         
         if not scene_graphs:
