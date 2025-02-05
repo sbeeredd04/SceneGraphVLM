@@ -1,80 +1,78 @@
 # Import required libraries
 import os
-import google.generativeai as genai
-import dotenv
 import json
-import logging
-import traceback
 import pickle
 from glob import glob
 from tqdm import tqdm
 import networkx as nx
 import matplotlib.pyplot as plt
 from PIL import Image
-import numpy as np
+import torch
+from transformers import AutoProcessor, Blip2ForConditionalGeneration
 import base64
-
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+import io
+import traceback
 
 def setup_environment():
-    """Setup environment and API configurations"""
+    """Setup environment and BLIP model configurations"""
     try:
-        logger.info("Starting environment setup...")
-        dotenv.load_dotenv()
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("Missing GEMINI_API_KEY")
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        logger.info("Environment setup completed")
-        return model
+        print("Starting BLIP model setup...")
+        
+        # Set device
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Using device: {device}")
+        
+        # Load model and processor
+        processor = AutoProcessor.from_pretrained("Salesforce/blip2-opt-2.7b")
+        model = Blip2ForConditionalGeneration.from_pretrained(
+            "Salesforce/blip2-opt-2.7b", 
+            torch_dtype=torch.float16
+        )
+        model.to(device)
+        
+        print("BLIP model setup completed")
+        return model, processor, device
     except Exception as e:
-        logger.error(f"Environment setup failed: {str(e)}")
+        print(f"Model setup failed: {str(e)}")
         raise
 
 def load_annotations():
     """Load annotation files and object/relationship classes"""
-    logger.info("Loading annotation files...")
+    print("Loading annotation files...")
     try:
         # Load object bbox and relationship data
-        with open('data/object_bbox_and_relationship.pkl', 'rb') as f:
+        with open('/content/drive/MyDrive/data/object_bbox_and_relationship.pkl', 'rb') as f:
             bbox_rel_data = pickle.load(f)
         
         # Load object classes
-        with open('data/object_classes.txt', 'r') as f:
+        with open('/content/drive/MyDrive/data/object_classes.txt', 'r') as f:
             object_classes = f.read().splitlines()
             
         # Load relationship classes
-        with open('data/relationship_classes.txt', 'r') as f:
+        with open('/content/drive/MyDrive/data/relationship_classes.txt', 'r') as f:
             relationship_classes = f.read().splitlines()
             
-        logger.info(f"Loaded annotations with {len(object_classes)} objects, {len(relationship_classes)} relationships")
+        print(f"Loaded annotations with {len(object_classes)} objects, {len(relationship_classes)} relationships")
         return bbox_rel_data, object_classes, relationship_classes
     
     except Exception as e:
-        logger.error(f"Failed to load annotations: {str(e)}")
+        print(f"Failed to load annotations: {str(e)}")
         raise
 
 def process_video_frames(video_id, bbox_rel_data):
     """Process frames from a specific video folder"""
     try:
-        logger.info(f"Processing video: {video_id}")
+        print(f"Processing video: {video_id}")
         
         # Get all frames for this video
-        frame_path = f"./data/frames/{video_id}/*.png"
+        frame_path = f"/content/drive/MyDrive/data/frames/{video_id}/*.png"
         frame_files = sorted(glob(frame_path))
         
         if not frame_files:
-            logger.error(f"No frames found in {frame_path}")
+            print(f"No frames found in {frame_path}")
             return None
             
-        logger.info(f"Found {len(frame_files)} frames for video {video_id}")
+        print(f"Found {len(frame_files)} frames for video {video_id}")
         
         # Extract scene graphs
         scene_graphs = []
@@ -87,20 +85,20 @@ def process_video_frames(video_id, bbox_rel_data):
             scene_graph = extract_scene_graph(frame_id, bbox_rel_data)
             
             if scene_graph:
-                logger.debug(f"Found scene graph for frame {frame_id}")
+                print(f"Found scene graph for frame {frame_id}")
                 scene_graphs.append({
                     'frame_id': frame_id,
                     'scene_graph': scene_graph
                 })
             else:
-                logger.warning(f"No scene graph found for frame {frame_id}")
+                print(f"No scene graph found for frame {frame_id}")
         
-        logger.info(f"Extracted {len(scene_graphs)} scene graphs")
+        print(f"Extracted {len(scene_graphs)} scene graphs")
         return scene_graphs
     
     except Exception as e:
-        logger.error(f"Video processing failed: {str(e)}")
-        logger.debug(f"Traceback: {traceback.format_exc()}")
+        print(f"Video processing failed: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise
 
 def extract_scene_graph(frame_id, bbox_rel_data):
@@ -109,7 +107,7 @@ def extract_scene_graph(frame_id, bbox_rel_data):
         # Get annotations for this frame
         frame_anns = bbox_rel_data.get(frame_id, [])
         if not frame_anns:
-            logger.debug(f"No annotations found for frame {frame_id}")
+            print(f"No annotations found for frame {frame_id}")
             return None
             
         scene_graph = {
@@ -142,14 +140,14 @@ def extract_scene_graph(frame_id, bbox_rel_data):
                     })
         
         if scene_graph["objects"]:
-            logger.debug(f"Extracted scene graph with {len(scene_graph['objects'])} objects and {len(scene_graph['relationships'])} relationships")
+            print(f"Extracted scene graph with {len(scene_graph['objects'])} objects and {len(scene_graph['relationships'])} relationships")
             return scene_graph
         else:
-            logger.debug(f"No valid objects found in annotations for frame {frame_id}")
+            print(f"No valid objects found in annotations for frame {frame_id}")
             return None
     
     except Exception as e:
-        logger.error(f"Failed to extract scene graph for frame {frame_id}: {str(e)}")
+        print(f"Failed to extract scene graph for frame {frame_id}: {str(e)}")
         return None
 
 def print_scene_graph(scene_graph):
@@ -180,183 +178,175 @@ def split_scene_graphs(scene_graphs, split_ratio=0.8):
         train_graphs = scene_graphs[:split_idx]
         test_graphs = scene_graphs[split_idx:]
         
-        logger.info(f"Split {len(scene_graphs)} graphs chronologically into {len(train_graphs)} train and {len(test_graphs)} test")
-        logger.debug(f"Training frames: {train_graphs[0]['frame_id']} to {train_graphs[-1]['frame_id']}")
-        logger.debug(f"Testing frames: {test_graphs[0]['frame_id']} to {test_graphs[-1]['frame_id']}")
+        print(f"Split {len(scene_graphs)} graphs chronologically into {len(train_graphs)} train and {len(test_graphs)} test")
+        print(f"Training frames: {train_graphs[0]['frame_id']} to {train_graphs[-1]['frame_id']}")
+        print(f"Testing frames: {test_graphs[0]['frame_id']} to {test_graphs[-1]['frame_id']}")
         
         return train_graphs, test_graphs
     except Exception as e:
-        logger.error(f"Failed to split scene graphs: {str(e)}")
+        print(f"Failed to split scene graphs: {str(e)}")
         raise
 
-def parse_model_response(response_text):
-    """Parse model response to extract JSON"""
+def predict_scene_graphs(train_graphs, num_predictions, model, processor, device,
+                        vocabulary_type='closed', object_classes=None, relationship_classes=None):
+    """Generate scene graph predictions using hybrid BLIP + Gemini approach with closed vocabulary"""
     try:
-        # Remove markdown formatting if present
-        if '```json' in response_text:
-            json_text = response_text.split('```json')[1].split('```')[0].strip()
-        elif '```' in response_text:
-            json_text = response_text.split('```')[1].strip()
-        else:
-            json_text = response_text.strip()
-            
-        # Parse JSON
-        scene_graph = json.loads(json_text)
-        logger.debug(f"Successfully parsed response into scene graph with {len(scene_graph.get('objects', []))} objects")
-        return scene_graph
-    
-    except Exception as e:
-        logger.error(f"Failed to parse model response: {str(e)}")
-        logger.debug(f"Response text: {response_text}")
-        return None
-
-def predict_scene_graphs(train_graphs, num_predictions, model, vocabulary_type='closed', 
-                        object_classes=None, relationship_classes=None):
-    """Generate scene graph predictions using frame images and scene graphs as context"""
-    try:
-        logger.info(f"Generating {num_predictions} sequential predictions using {vocabulary_type} vocabulary")
+        print(f"\n=== Starting Hybrid Scene Graph Prediction (Closed Vocabulary) ===")
+        print(f"Will generate {num_predictions} sequential predictions")
+        print(f"Using {len(object_classes)} objects and {len(relationship_classes)} relationships")
+        
+        # Print available vocabulary
+        print("\nAvailable Objects:", ", ".join(object_classes))
+        print("Available Relationships:", ", ".join(relationship_classes))
+        
         predictions = []
         context_graphs = train_graphs.copy()
         
-        # Debug initial context
-        logger.debug("\n=======INITIAL CONTEXT========")
-        logger.debug(f"Starting with {len(context_graphs)} training frames")
-        logger.debug(f"Frame numbers: {[int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs]}")
-        logger.debug("============================\n")
-        
         # Get test frame IDs to predict
-        test_frame_nums = []
         last_train_num = int(context_graphs[-1]['frame_id'].split('/')[-1].split('.')[0])
-        
-        # Find existing frame files after the last training frame
         video_id = context_graphs[0]['frame_id'].split('/')[0]
-        frame_pattern = f"./data/frames/{video_id}/*.png"
+        
+        # Find next frames to predict
+        frame_pattern = f"/content/drive/MyDrive/data/frames/{video_id}/*.png"
         all_frames = sorted(glob(frame_pattern))
+        test_frame_nums = []
         
         for frame_path in all_frames:
             frame_num = int(frame_path.split('/')[-1].split('.')[0])
             if frame_num > last_train_num:
                 test_frame_nums.append(frame_num)
         
-        logger.info(f"Found {len(test_frame_nums)} test frames to predict after frame {last_train_num}")
-        
-        # Prepare vocabulary context
-        vocab_context = ""
-        if vocabulary_type == 'closed':
-            vocab_context = f"Available objects: {', '.join(object_classes)}\nAvailable relationships: {', '.join(relationship_classes)}"
-        
+        # Generate predictions for each test frame
         for i, next_frame_num in enumerate(test_frame_nums[:num_predictions], 1):
-            logger.debug(f"\n=======PREDICTION {i}/{num_predictions}========")
-            logger.debug(f"Predicting frame {next_frame_num:06d}")
-            logger.debug(f"Context has {len(context_graphs)} frames")
-            logger.debug(f"Last 3 context frames: {[int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs[-3:]]}")
+            print(f"\n=== PREDICTION {i}/{num_predictions} ===")
+            print(f"Predicting frame {video_id}/{next_frame_num:06d}.png")
             
-            # Load previous frame images as base64
-            frame_contexts = []
-            for ctx in context_graphs:
-                frame_path = f"./data/frames/{ctx['frame_id']}"
-                try:
-                    with open(frame_path, 'rb') as img_file:
-                        img_data = base64.b64encode(img_file.read()).decode()
-                        frame_num = int(ctx['frame_id'].split('/')[-1].split('.')[0])
-                        frame_contexts.append({
-                            'frame_num': frame_num,
-                            'image': img_data,
-                            'scene_graph': ctx['scene_graph']
-                        })
-                except Exception as e:
-                    logger.warning(f"Failed to load frame image {frame_path}: {e}")
+            # Load previous frame image for context
+            prev_frame_num = int(context_graphs[-1]['frame_id'].split('/')[-1].split('.')[0])
+            prev_frame_path = f"/content/drive/MyDrive/data/frames/{video_id}/{prev_frame_num:06d}.png"
+            print(f"Using previous frame for context: {prev_frame_path}")
+            image = Image.open(prev_frame_path).convert('RGB')
             
-            # Debug context information
-            debug_context = "\n=======CONTEXT DETAILS========\n"
-            for ctx in frame_contexts[-3:]:  # Show last 3 frames for brevity
-                frame_num = ctx['frame_num']
-                scene_graph = ctx['scene_graph']
-                debug_context += f"\nFrame {frame_num:06d}:\n"
-                debug_context += "Objects:\n"
-                for obj in scene_graph['objects']:
-                    debug_context += f"  - {obj['object']}\n"
-                debug_context += "Relationships:\n"
-                for rel in scene_graph['relationships']:
-                    debug_context += f"  - {rel['subject']} {rel['predicate']} {rel['object']}\n"
-            debug_context += "\n========================\n"
+            # Prepare context from previous frames
+            context_str = "Based on the previous frames:\n"
+            for ctx in context_graphs[-3:]:  # Use last 3 frames for context
+                objects = [obj['object'] for obj in ctx['scene_graph']['objects']]
+                relationships = [f"{r['subject']} {r['predicate']} {r['object']}" 
+                               for r in ctx['scene_graph']['relationships']]
+                context_str += f"\nFrame {ctx['frame_id']}:\n"
+                context_str += f"Objects: {', '.join(objects)}\n"
+                context_str += f"Relationships: {', '.join(relationships)}\n"
             
-            logger.debug(debug_context)
+            # Process with BLIP
+            inputs = processor(image, text=context_str, return_tensors="pt").to(device, torch.float16)
+            generated_ids = model.generate(**inputs, max_new_tokens=200)
+            blip_response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
             
-            # Prepare context string with both images and scene graphs
-            context_str = json.dumps([{
-                'frame_num': ctx['frame_num'],
-                'scene_graph': ctx['scene_graph']
-            } for ctx in frame_contexts], indent=2)
+            print("\n=== BLIP RESPONSE ===")
+            print(blip_response)
             
-            prompt = f"""Given the sequence of scene graphs below, predict the next scene graph for frame {next_frame_num:06d}.
-            Consider the logical progression of objects, their interactions, and relationships.
-            
-            {vocab_context if vocabulary_type == 'closed' else ''}
-
-            Previous frames (with scene graphs):
+            # Update BLIP prompt to include vocabulary constraints
+            prompt = f"""
             {context_str}
             
-            Predict the next scene graph that maintains temporal consistency with the sequence above.
-            Return ONLY a JSON object with this structure:
-            {{
-                "objects": [
-                    {{"object": "<object_name>", "attributes": []}},
-                ],
-                "relationships": [
-                    {{"subject": "<object1>", "predicate": "<relationship>", "object": "<object2>"}}
-                ]
-            }}
-            Do not include any other text or formatting, just the JSON object.
+            Based on this image and the context above, predict what objects and relationships will appear in the next frame.
+            
+            Use ONLY these objects: {', '.join(object_classes)}
+            Use ONLY these relationships: {', '.join(relationship_classes)}
+            
+            Focus on:
+            1. Objects that are clearly present
+            2. Direct relationships between objects
+            3. Only use the provided vocabulary terms
+            
+            Be specific and natural in your description.
             """
             
-            # Debug prompt
-            logger.debug("\n=======PROMPT========\n")
-            logger.debug(prompt)
-            logger.debug("\n===================\n")
+            print("\n=== BLIP PROMPT ===")
+            print(prompt)
             
-            response = model.generate_content(prompt)
-            predicted_graph = parse_model_response(response.text)
+            # Update Gemini prompt to enforce vocabulary
+            gemini_prompt = f"""
+            Analyze this scene description and previous frames:
+
+            {blip_response}
+
+            Generate a scene graph prediction using ONLY these terms:
             
-            if predicted_graph:
-                # Debug prediction and context update
-                logger.debug("\n=======CONTEXT UPDATE========")
-                logger.debug(f"Adding prediction for frame {next_frame_num:06d} to context")
-                logger.debug("Predicted scene graph:")
-                logger.debug("Objects:")
+            Objects: {', '.join(object_classes)}
+            Relationships: {', '.join(relationship_classes)}
+
+            The scene graph must follow this exact structure:
+            {{
+                "objects": [
+                    {{"object": "object_name"}}
+                ],
+                "relationships": [
+                    {{"subject": "subject_name", "predicate": "predicate_name", "object": "object_name"}}
+                ]
+            }}
+
+            Rules:
+            1. Only use objects from the provided list
+            2. Only use relationships from the provided list
+            3. Every relationship must have a valid subject and object
+            4. Output only valid JSON, no other text
+            """
+            
+            print("\n=== GEMINI PROMPT ===")
+            print(gemini_prompt)
+            
+            # Get Gemini response and validate against vocabulary
+            gemini_response = get_gemini_response(gemini_prompt)
+            
+            print("\n=== GEMINI RESPONSE ===")
+            print(gemini_response)
+            
+            try:
+                predicted_graph = json.loads(gemini_response)
+                # Validate against closed vocabulary
+                predicted_graph = validate_vocabulary(
+                    predicted_graph, 
+                    object_classes, 
+                    relationship_classes,
+                    strict=True  # Enforce strict vocabulary matching
+                )
+                
+                print("\n=== VALIDATED SCENE GRAPH ===")
+                print(f"Objects ({len(predicted_graph['objects'])}):")
                 for obj in predicted_graph['objects']:
-                    logger.debug(f"  - {obj['object']}")
-                logger.debug("Relationships:")
+                    print(f"- {obj['object']}")
+                print(f"\nRelationships ({len(predicted_graph['relationships'])}):")
                 for rel in predicted_graph['relationships']:
-                    logger.debug(f"  - {rel['subject']} {rel['predicate']} {rel['object']}")
+                    print(f"- {rel['subject']} {rel['predicate']} {rel['object']}")
                 
-                # Create prediction entry with proper frame ID format
-                prediction_entry = {
-                    'frame_id': f"{video_id}/{next_frame_num:06d}.png",
-                    'scene_graph': predicted_graph
+            except Exception as e:
+                print(f"\nFailed to parse or validate scene graph: {str(e)}")
+                predicted_graph = {
+                    "objects": [{"object": "person"}],
+                    "relationships": []
                 }
-                
-                predictions.append(prediction_entry)
-                context_graphs.append(prediction_entry)
-                
-                logger.debug(f"Context size now: {len(context_graphs)} frames")
-                logger.debug(f"Context frame numbers: {[int(g['frame_id'].split('/')[-1].split('.')[0]) for g in context_graphs[-3:]]}")
-                logger.debug("============================\n")
-            else:
-                logger.warning(f"Failed to predict frame {next_frame_num:06d}")
-                continue
-                
+            
+            # Add prediction
+            prediction_entry = {
+                'frame_id': f"{video_id}/{next_frame_num:06d}.png",
+                'scene_graph': predicted_graph
+            }
+            predictions.append(prediction_entry)
+            context_graphs.append(prediction_entry)
+            
         return predictions
         
     except Exception as e:
-        logger.error(f"Prediction failed: {str(e)}")
+        print(f"Prediction failed: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise
 
 def visualize_scene_graph(scene_graph, title, ax):
     """Visualize scene graph using networkx"""
     try:
         if not scene_graph or 'objects' not in scene_graph:
-            logger.error(f"Invalid scene graph structure for {title}: {scene_graph}")
+            print(f"Invalid scene graph structure for {title}: {scene_graph}")
             return
             
         G = nx.Graph()
@@ -366,7 +356,7 @@ def visualize_scene_graph(scene_graph, title, ax):
             if isinstance(obj, dict) and "object" in obj:
                 G.add_node(obj["object"], type="object")
             else:
-                logger.warning(f"Invalid object structure: {obj}")
+                print(f"Invalid object structure: {obj}")
                 continue
             
         # Add relationship edges
@@ -375,7 +365,7 @@ def visualize_scene_graph(scene_graph, title, ax):
                 G.add_edge(rel["subject"], rel["object"], 
                           label=rel["predicate"])
             else:
-                logger.warning(f"Invalid relationship structure: {rel}")
+                print(f"Invalid relationship structure: {rel}")
                 continue
             
         # Draw graph
@@ -388,14 +378,14 @@ def visualize_scene_graph(scene_graph, title, ax):
             edge_labels = nx.get_edge_attributes(G, 'label')
             nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax)
         else:
-            logger.warning(f"No valid nodes to visualize for {title}")
+            print(f"No valid nodes to visualize for {title}")
             
         ax.set_title(title)
         ax.axis('off')
         
     except Exception as e:
-        logger.error(f"Failed to visualize scene graph: {str(e)}")
-        logger.debug(f"Scene graph: {scene_graph}")
+        print(f"Failed to visualize scene graph: {str(e)}")
+        print(f"Scene graph: {scene_graph}")
         raise
 
 def visualize_comparison(frame_path, ground_truth, prediction):
@@ -422,28 +412,28 @@ def visualize_comparison(frame_path, ground_truth, prediction):
         plt.show()
         
     except Exception as e:
-        logger.error(f"Visualization failed: {str(e)}")
+        print(f"Visualization failed: {str(e)}")
         raise
 
 def visualize_results(test_graphs, predictions):
     """Visualize all results"""
     try:
         if not predictions:
-            logger.warning("No predictions to visualize")
+            print("No predictions to visualize")
             return
             
-        logger.info("Visualizing results...")
+        print("Visualizing results...")
         for i, (test_graph, pred_graph) in enumerate(zip(test_graphs, predictions)):
             try:
-                frame_path = f"./data/frames/{test_graph['frame_id']}"
-                logger.debug(f"Visualizing comparison for frame {test_graph['frame_id']}")
+                frame_path = f"/content/drive/MyDrive/data/frames/{test_graph['frame_id']}"
+                print(f"Visualizing comparison for frame {test_graph['frame_id']}")
                 
                 # Extract scene graph from prediction (it's nested in the prediction structure)
                 pred_scene_graph = pred_graph['scene_graph'] if isinstance(pred_graph, dict) else pred_graph
                 
                 # Log the structures for debugging
-                logger.debug(f"Ground truth structure: {test_graph['scene_graph'].keys()}")
-                logger.debug(f"Prediction structure: {pred_scene_graph.keys()}")
+                print(f"Ground truth structure: {test_graph['scene_graph'].keys()}")
+                print(f"Prediction structure: {pred_scene_graph.keys()}")
                 
                 visualize_comparison(
                     frame_path,
@@ -451,16 +441,16 @@ def visualize_results(test_graphs, predictions):
                     pred_scene_graph
                 )
             except Exception as e:
-                logger.error(f"Failed to visualize comparison {i+1}: {str(e)}")
-                logger.debug(f"Ground truth: {test_graph}")
-                logger.debug(f"Prediction: {pred_graph}")
+                print(f"Failed to visualize comparison {i+1}: {str(e)}")
+                print(f"Ground truth: {test_graph}")
+                print(f"Prediction: {pred_graph}")
                 continue
                 
     except Exception as e:
-        logger.error(f"Visualization failed: {str(e)}")
+        print(f"Visualization failed: {str(e)}")
         raise
 
-def validate_vocabulary(scene_graph, object_classes, relationship_classes):
+def validate_vocabulary(scene_graph, object_classes, relationship_classes, strict=True):
     """Validate and normalize scene graph vocabulary against allowed classes"""
     try:
         validated_graph = {
@@ -468,82 +458,111 @@ def validate_vocabulary(scene_graph, object_classes, relationship_classes):
             "relationships": []
         }
         
-        # Helper function to find closest match in vocabulary
-        def find_closest_match(word, vocab):
-            # Direct match
-            if word.lower() in [v.lower() for v in vocab]:
-                return vocab[[v.lower() for v in vocab].index(word.lower())]
-            
-            # Common substitutions
-            substitutions = {
-                # Objects
-                'person': ['human', 'man', 'woman', 'individual', 'someone'],
-                'box': ['container', 'package', 'carton'],
-                'door': ['entrance', 'doorway', 'gate'],
-                'mirror': ['reflection', 'glass'],
-                # Relationships
-                'looking_at': ['watching', 'observing', 'viewing', 'gazing_at'],
-                'holding': ['carrying', 'gripping', 'grasping'],
-                'touching': ['contacting', 'in_contact_with'],
-                'in_front_of': ['before', 'facing'],
-                'behind': ['at_back_of', 'in_back_of'],
-                'not_contacting': ['separate_from', 'away_from', 'not_touching'],
-                'not_looking_at': ['looking_away', 'facing_away']
-            }
-            
-            # Check substitutions
-            for valid_term, alternatives in substitutions.items():
-                if word.lower() in [alt.lower() for alt in alternatives] and valid_term in vocab:
-                    return valid_term
-            
-            # Default fallbacks
-            if vocab == relationship_classes:
-                logger.warning(f"Unknown relationship '{word}', using 'other_relationship'")
-                return 'other_relationship'
+        def validate_term(word, vocab):
+            if strict:
+                # In strict mode, only exact matches are allowed
+                if word not in vocab:
+                    raise ValueError(f"Term '{word}' not in vocabulary: {vocab}")
+                return word
             else:
-                logger.warning(f"Unknown object '{word}', using 'other_object'")
-                return 'other_object'
+                # In non-strict mode, try to find closest match
+                if word.lower() in [v.lower() for v in vocab]:
+                    return vocab[[v.lower() for v in vocab].index(word.lower())]
+                raise ValueError(f"No match found for '{word}' in vocabulary")
         
         # Validate objects
         seen_objects = set()
         for obj in scene_graph.get("objects", []):
             if isinstance(obj, dict) and "object" in obj:
-                obj_name = obj["object"]
-                validated_name = find_closest_match(obj_name, object_classes)
-                
-                if validated_name not in seen_objects:
+                obj_name = validate_term(obj["object"], object_classes)
+                if obj_name not in seen_objects:
                     validated_graph["objects"].append({
-                        "object": validated_name,
+                        "object": obj_name,
                         "attributes": obj.get("attributes", []),
                         "bbox": obj.get("bbox", [])
                     })
-                    seen_objects.add(validated_name)
+                    seen_objects.add(obj_name)
         
         # Validate relationships
         for rel in scene_graph.get("relationships", []):
             if isinstance(rel, dict) and all(k in rel for k in ["subject", "predicate", "object"]):
                 validated_rel = {
-                    "subject": find_closest_match(rel["subject"], object_classes),
-                    "predicate": find_closest_match(rel["predicate"], relationship_classes),
-                    "object": find_closest_match(rel["object"], object_classes)
+                    "subject": validate_term(rel["subject"], object_classes),
+                    "predicate": validate_term(rel["predicate"], relationship_classes),
+                    "object": validate_term(rel["object"], object_classes)
                 }
                 validated_graph["relationships"].append(validated_rel)
         
-        logger.debug(f"Validated scene graph: {len(validated_graph['objects'])} objects, {len(validated_graph['relationships'])} relationships")
+        print(f"Validated scene graph: {len(validated_graph['objects'])} objects, {len(validated_graph['relationships'])} relationships")
         return validated_graph
         
     except Exception as e:
-        logger.error(f"Vocabulary validation failed: {str(e)}")
-        logger.debug(f"Original scene graph: {scene_graph}")
-        return scene_graph  # Return original if validation fails
+        print(f"Vocabulary validation failed: {str(e)}")
+        if strict:
+            raise  # In strict mode, fail on validation errors
+        return scene_graph  # In non-strict mode, return original
+
+def get_gemini_response(prompt):
+    """Get response from Gemini API and extract JSON scene graph"""
+    try:
+        # Initialize Gemini
+        import google.generativeai as genai
+        
+        # Configure the model
+        genai.configure(api_key='AIzaSyCsVeBSru9Wu51L9QA8EIjWlP2_Zow4FC8')
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Update prompt to force JSON-only response
+        json_prompt = f"""
+        {prompt}
+        
+        IMPORTANT: Respond ONLY with the JSON scene graph, no other text.
+        The scene graph must be valid JSON with this exact structure:
+        {{
+            "objects": [
+                {{"object": "object_name"}}
+            ],
+            "relationships": [
+                {{"subject": "subject_name", "predicate": "predicate_name", "object": "object_name"}}
+            ]
+        }}
+        """
+        
+        # Get response
+        response = model.generate_content(json_prompt)
+        response_text = response.text
+        
+        # Extract JSON if response contains markdown
+        if "```json" in response_text:
+            json_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            json_text = response_text.split("```")[1].strip()
+        else:
+            json_text = response_text.strip()
+            
+        # Validate JSON structure
+        scene_graph = json.loads(json_text)
+        if not all(key in scene_graph for key in ["objects", "relationships"]):
+            raise ValueError("Invalid scene graph structure")
+            
+        return json_text
+        
+    except Exception as e:
+        print(f"Gemini API or JSON parsing failed: {str(e)}")
+        print(f"Raw response: {response_text if 'response_text' in locals() else 'No response'}")
+        # Return minimal valid scene graph as fallback
+        return json.dumps({
+            "objects": [{"object": "person"}],
+            "relationships": []
+        })
 
 def main():
     """Main execution function"""
     try:
-        logger.info("Starting scene graph prediction pipeline")
+        print("Starting scene graph prediction pipeline")
         
         # Setup
-        model = setup_environment()
+        model, processor, device = setup_environment()
         
         # Load data
         bbox_rel_data, object_classes, relationship_classes = load_annotations()
@@ -553,18 +572,20 @@ def main():
         scene_graphs = process_video_frames(video_id, bbox_rel_data)
         
         if not scene_graphs:
-            logger.warning(f"No scene graphs found for video {video_id}")
+            print(f"No scene graphs found for video {video_id}")
             return
             
         # Split into train/test
         train_graphs, test_graphs = split_scene_graphs(scene_graphs)
         
         # Generate predictions
-        vocabulary_type = 'closed'  # or 'open'
+        vocabulary_type = 'closed'
         predictions = predict_scene_graphs(
             train_graphs,
             len(test_graphs),
             model,
+            processor,
+            device,
             vocabulary_type,
             object_classes,
             relationship_classes
@@ -573,11 +594,11 @@ def main():
         # Visualize results
         visualize_results(test_graphs, predictions)
         
-        logger.info("Pipeline completed successfully")
+        print("Pipeline completed successfully")
         
     except Exception as e:
-        logger.error(f"Pipeline failed: {str(e)}")
-        logger.debug(f"Traceback: {traceback.format_exc()}")
+        print(f"Pipeline failed: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise
 
 if __name__ == "__main__":
