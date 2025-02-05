@@ -509,7 +509,7 @@ def get_gemini_response(prompt):
         import google.generativeai as genai
         
         # Configure the model
-        genai.configure(api_key='AIzaSyCsVeBSru9Wu51L9QA8EIjWlP2_Zow4FC8')
+        genai.configure(api_key='')
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Update prompt to force JSON-only response
